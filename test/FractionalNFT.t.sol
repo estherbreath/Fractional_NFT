@@ -24,9 +24,17 @@ contract FractionalNFT is Test{
       function setUp() public {
         mPlace = new NFTMarket();
 
-          (addrA, privKeyA) = mkaddr("ADDRA");
+        (addrA, privKeyA) = mkaddr("ADDRA");
         (addrB, privKeyB) = mkaddr("ADDRB");
-
+            _nextTokenId = 1;
+            fractionPrice = 0.5 ether;
+            platformFeePercentage = 10;
+        
 }
+
+    function testNFTGreaterThanZero() public {
+    vm.expectRevert("Fractions must be greater than 0");
+     FractionalNFT.tokenizeNFT() 
+    } 
 }
 
