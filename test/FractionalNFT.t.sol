@@ -34,7 +34,7 @@ contract FractionalNFT is Test{
 
     function testNFTGreaterThanZero() public {
     vm.expectRevert("Fractions must be greater than 0");
-     FractionalNFT.tokenizeNFT() 
+     FractionalNFT.tokenizeNFT(1, 0.1); 
     } 
 }
 

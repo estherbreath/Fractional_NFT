@@ -13,10 +13,10 @@ abstract contract Helpers is Test {
         addr = vm.addr(privateKey);
         vm.label(addr, name);
     }
-    
+
        function switchSigner(address _newSigner) public {
         vm.startPrank(_newSigner);
-        vm.deal(_newSigner, 3 ether);
+        vm.deal(_newSigner, 0.5 ether);
         vm.label(_newSigner, "ADDR");
     }
 }
