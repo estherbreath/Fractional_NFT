@@ -1,76 +1,118 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "lib/openzeppelin-contracts/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
-import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+// import "lib/openzeppelin-contracts/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+// import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import "lib/openzeppelin-contracts/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-abstract contract FractionalNFTPlatform is ERC721Enumerable, Ownable {
-    string private _baseTokenURI;
-    uint256 private _nextTokenId = 1;
-    uint256 public fractionPrice = 0.5 ether;
-    uint256 public platformFeePercentage = 10; // 0.1%
-
-    struct NFTDetails {
-        uint256 totalFractions;
-        address owner;
-    }
-
-    mapping(uint256 => NFTDetails) public nftDetails;
-    mapping(uint256 => uint256) public fractionToNFT; // Maps fraction to original NFT ID
-
-   constructor(string memory _name, string memory _symbol, string memory baseTokenURI) ERC721(_name, _symbol) {
-    _baseTokenURI = baseTokenURI;
+struct NFTVault {
+    address owner;
+    address nftAddress;
+    uint256 tokenId;
+    uint256 timeAdded;
+    address fractionedERC;
+    uint256 pricePerUnit;
+    uint256 supply;
 }
 
-    function _baseURI() internal view override returns (string memory) {
-        return _baseTokenURI;
+contract FractionERC is ERC20 {
+    address operator;
+
+    constructor(string memory _name, string memory _symbol, uint256 _supply) ERC20(_name, _symbol) {
+        _mint(msg.sender, _supply);
+        operator = msg.sender;
     }
 
-    function setBaseURI(string memory baseTokenURI) external onlyOwner {
-        _baseTokenURI = baseTokenURI;
-    }
-
-    function mintNFT(address to) external onlyOwner {
-        _safeMint(to, _nextTokenId);
-        nftDetails[_nextTokenId] = NFTDetails(1, to);
-        _nextTokenId++;
-    }
-
-    function tokenizeNFT(uint256 nftId, uint256 fractions) external onlyOwner {
-        require(fractions > 0, "Fractions must be greater than 0");
-        require(fractions <= _nextTokenId, "Cannot tokenize more fractions than available NFTs");
-        
-        nftDetails[nftId].totalFractions += fractions;
-
-        for (uint256 i = 0; i < fractions; i++) {
-            fractionToNFT[_nextTokenId] = nftId;
-            _safeMint(msg.sender, _nextTokenId);
-            nftDetails[nftId].owner = msg.sender;
-            _nextTokenId++;
-        }
-    }
-
-    function purchaseFraction(uint256 fractionId) external payable {
-        require(msg.value >= fractionPrice, "Insufficient payment for fraction");
-        require(ownerOf(fractionId) == address(this), "Fraction is not available for purchase");
-
-        // Calculate platform fee
-        uint256 platformFee = (msg.value * platformFeePercentage) / 100;
-        uint256 paymentToNFTOwner = msg.value - platformFee;
-
-        // Transfer funds
-        payable(nftDetails[fractionToNFT[fractionId]].owner).transfer(paymentToNFTOwner);
-        payable(owner()).transfer(platformFee);
-
-        // Transfer the fraction to the buyer
-        _transfer(ownerOf(fractionId), msg.sender, fractionId);
-    }
-
-    function transferFraction(uint256 fractionId, address to) external {
-        require(ownerOf(fractionId) == msg.sender, "You do not own this fraction");
-        _transfer(msg.sender, to, fractionId);
+    function burn(address _from) public {
+        require(msg.sender == operator, "Only OPerator Can Perform this activity");
+        _burn(_from, balanceOf(_from));
     }
 }
 
+contract FractionalNFT is IERC721Receiver {
+    event FractionCreated(
+        address indexed _nftAddress, uint256 indexed _tokenId, uint256 _totalWholeSupply, uint256 _pricePerUnit
+    );
 
+    event BoughtFraction(
+        address indexed _buyer, address indexed _fractionedERC, address indexed _nftAddress, uint256 _tokenId
+    );
 
+    event FractionClaimed(address indexed _nftAddress, uint256 indexed _tokenId);
+
+    mapping(address => NFTVault[]) private vaults;
+    mapping(address => mapping(uint256 => uint256)) vaultIndex;
+    uint256 constant OPERATING_FEE = 1;
+    uint256 constant OP_FEE_DIVISIOR = 1000;
+    address operator;
+
+    constructor() {
+        operator = msg.sender;
+    }
+
+    function createFraction(address _nftAddress, uint256 _tokenId, uint256 _totalWholeSupply, uint256 _pricePerUnit)
+        external
+    {
+        IERC721 nftC = IERC721(_nftAddress);
+        nftC.safeTransferFrom(msg.sender, address(this), _tokenId);
+
+        vaultIndex[_nftAddress][_tokenId] = vaults[_nftAddress].length;
+        FractionERC f = new FractionERC("Fractional NFT", "FNT", _totalWholeSupply * 1e18);
+
+        vaults[_nftAddress].push(
+            NFTVault(msg.sender, _nftAddress, _tokenId, block.timestamp, address(f), _pricePerUnit, _totalWholeSupply)
+        );
+
+        emit FractionCreated(_nftAddress, _tokenId, _totalWholeSupply, _pricePerUnit);
+    }
+
+    function buyFraction(address _nftAddress, uint256 _tokenId) external payable {
+        require(msg.value > 0, "Zero Ether not allowed");
+        uint256 _vaultIndex = vaultIndex[_nftAddress][_tokenId];
+        NFTVault storage _vault = vaults[_nftAddress][_vaultIndex];
+        FractionERC f = FractionERC(_vault.fractionedERC);
+        uint256 units = _calculateUnits(msg.value, _vault.pricePerUnit, f.decimals());
+
+        uint256 fee = msg.value * OPERATING_FEE / OP_FEE_DIVISIOR;
+
+        payable(operator).transfer(fee);
+        payable(_vault.owner).transfer(msg.value - fee);
+        f.transfer(msg.sender, units);
+
+        emit BoughtFraction(msg.sender, address(f), _nftAddress, _tokenId);
+    }
+
+    function withdrawNFTWithTotalSupply(address _nftAddress, uint256 _tokenId) public {
+        uint256 _vaultIndex = vaultIndex[_nftAddress][_tokenId];
+        NFTVault storage _vault = vaults[_nftAddress][_vaultIndex];
+        FractionERC f = FractionERC(_vault.fractionedERC);
+        require(f.balanceOf(msg.sender) >= f.totalSupply(), "Not enough tokens");
+        IERC721 nftC = IERC721(_nftAddress);
+
+        f.burn(msg.sender);
+        nftC.safeTransferFrom(address(this), msg.sender, _tokenId);
+
+        emit FractionClaimed(_nftAddress, _tokenId);
+    }
+
+    function getVault(address _nftAddress, uint256 _tokenId) public view returns (NFTVault memory) {
+        uint256 _vaultIndex = vaultIndex[_nftAddress][_tokenId];
+        return vaults[_nftAddress][_vaultIndex];
+    }
+
+    function _calculateUnits(uint256 _amount, uint256 _pricePerUnit, uint8 _decimals) internal pure returns (uint256) {
+        return (_amount * 10 ** _decimals) / _pricePerUnit;
+    }
+
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+        external
+        pure
+        override
+        returns (bytes4)
+    {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+}
